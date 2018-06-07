@@ -3,6 +3,22 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# images
+*.png
+*.pdf
+*.gif
+
+#save files
+*.pkl
+
+#data
+*.fit
+*.fits
+*.hdf5
+*.csv*
+*.txt
+
+
 # C extensions
 *.so
 
