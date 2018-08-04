@@ -73,7 +73,8 @@ def integrate_forward_backward(potential, w0, t_forw, t_back, dt=0.5,
 
     o1 = o1[::-1]
     o2 = o2[1:]
-    orbit = combine((o1, o2), along_time_axis=True)
+    #print(o1.t, o2.t)
+    orbit = combine([o1, o2], along_time_axis=True)
 
     if orbit.pos.shape[-1] == 1:
         return orbit[:,0]
@@ -192,17 +193,17 @@ from gala.util import atleast_2d
 
 def _mcmc_sample_to_coord(p, R):
     p = atleast_2d(p, insert_axis=-1) # note: from Gala, not Numpy
-    rep = sf.StreamFrame(phi1=p[0]*0.*u.radian,
-                         phi2=p[0]*u.radian, # this index looks weird but is right
-                         distance=p[1]*u.kpc,
+    rep = sf.StreamFrame(phi1=p[0]*0.*galactic.to_dict()['angle'],
+                         phi2=p[0]*galactic.to_dict()['angle'], # this index looks weird but is right
+                         distance=p[1]*galactic.to_dict()['length'],
                          M=R)
     gal = rep.transform_to(coord.Galactic)
     galnew = coord.Galactic(l = gal.l,
                             b = gal.b,
                             distance = gal.distance,
-                            pm_l_cosb = p[2]*u.rad/u.Myr,
-                            pm_b = p[3]*u.rad/u.Myr,
-                            radial_velocity = p[4]*u.kpc/u.Myr)
+                            pm_l_cosb = p[2]*galactic.to_dict()['angle']/galactic.to_dict()['time'],
+                            pm_b = p[3]*galactic.to_dict()['angle']/galactic.to_dict()['time'],
+                            radial_velocity = p[4]*galactic.to_dict()['length']/galactic.to_dict()['time'])
     return galnew
 
 def _mcmc_sample_to_w0(p, R):
@@ -224,7 +225,7 @@ def ln_likelihood(p, data, err, R, Potential, true_potential, dt, freeze):
     # unpack the parameters and the frozen parameters
     phi2,d,mul,mub,vr,t_forw,t_back,phi2_sigma,d_sigma,vr_sigma,hernquist_logm = _unpack(p, freeze)
 
-    w0 = _mcmc_sample_to_w0([phi2,d,mul,mub,vr], R)[:,0]
+    w0 = _mcmc_sample_to_w0([phi2,d,mul,mub,vr], R)#[:,0]
 
     # HACK: a prior on velocities
     vmag2 = np.sum(w0[3:]**2)
@@ -348,3 +349,99 @@ def reflex_uncorrect(coords, galactocentric_frame=None):
     rep = rep.with_differentials(observed.cartesian.differentials['s'] - v_sun)
     fr = galactocentric_frame.realize_frame(rep).transform_to(c.frame)
     return coord.SkyCoord(fr)
+
+def combine(args, along_time_axis=False):
+    """
+    Combine the input `Orbit` objects into a single object.
+
+    The `Orbits` must all have the same potential and time array.
+
+    Parameters
+    ----------
+    args : iterable
+        Multiple instances of `Orbit` objects.
+    along_time_axis : bool (optional)
+        If True, will combine single orbits along the time axis.
+
+    Returns
+    -------
+    obj : orbit_like
+        A single objct with positions and velocities stacked along the last axis.
+
+    """
+
+    ndim = None
+    time = None
+    pot = None
+    pos_unit = None
+    vel_unit = None
+    cls = None
+
+    all_pos = []
+    all_vel = []
+    all_time = []
+    for x in args:
+        if ndim is None:
+            ndim = x.ndim
+            pos_unit = x.xyz.unit
+            vel_unit = x.v_xyz.unit
+            time = x.t
+            if time is not None:
+                t_unit = time.unit
+            else:
+                t_unit = None
+            pot = x.potential
+            cls = x.__class__
+        else:
+            if x.__class__.__name__ != cls.__name__:
+                raise ValueError("All objects must have the same class.")
+
+            if x.ndim != ndim:
+                raise ValueError("All objects must have the same dimensionality.")
+
+            if not along_time_axis:
+                if time is not None:
+                    if x.t is None or len(x.t) != len(time) or np.any(x.t.to(time.unit).value != time.value):
+                        raise ValueError("All orbits must have the same time array.")
+
+            if x.potential != pot:
+                raise ValueError("All orbits must have the same Potential object.")
+
+        pos = x.xyz
+        if pos.ndim < 3:
+            pos = pos[...,np.newaxis]
+
+        vel = x.v_xyz
+        if vel.ndim < 3:
+            vel = vel[...,np.newaxis]
+
+        all_pos.append(pos.to(pos_unit).value)
+        all_vel.append(vel.to(vel_unit).value)
+        if time is not None:
+            all_time.append(x.t.to(t_unit).value)
+
+    norbits = np.array([pos.shape[-1] for pos in all_pos] + [vel.shape[-1] for pos in all_vel])
+    if along_time_axis:
+        if np.all(norbits == norbits[0]):
+            all_pos = np.hstack(all_pos)*pos_unit
+            all_vel = np.hstack(all_vel)*vel_unit
+            if len(all_time) > 0:
+                all_time = np.concatenate(all_time)*t_unit
+            else:
+                all_time = None
+        else:
+            raise ValueError("To combine along time axis, all orbit objects must have "
+                             "the same number of orbits.")
+        if args[0].pos.ndim == 2:
+            all_pos = all_pos[...,0]
+            all_vel = all_vel[...,0]
+
+    else:
+        all_pos = np.dstack(all_pos)*pos_unit
+        all_vel = np.dstack(all_vel)*vel_unit
+        if len(all_time) > 0:
+            all_time = all_time[0]*t_unit
+        else:
+            all_time = None
+
+    return cls(pos=all_pos, vel=all_vel, t=all_time, potential=args[0].potential)
